@@ -1,0 +1,450 @@
+---
+title: "Generating expression data of ROS-treated MCF7 cells for online app"
+author: "Daniel Levings"
+date: "01/28/2022"
+header-includes:
+- \usepackage{pdflscape}
+- \usepackage{pdfpages}
+- \usepackage{float}
+- \newcommand{\blandscape}{\begin{landscape}}
+- \newcommand{\elandscape}{\end{landscape}}
+output:
+    pdf_document: default
+    html_document: default
+---  
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# knitr::opts_chunk$set(echo = FALSE)
+# knitr::opts_chunk$set(warning = FALSE)
+# knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(fig.align = "center", fig.pos="H")
+knitr::knit_hooks$set(document = function(x) {sub('\\usepackage[]{color}', '\\usepackage{xcolor}', x, fixed = TRUE)})
+```  
+
+## Purpose of this document/code:  
+
+This is an **R Markdown** script created to document my analysis of ROS exposure of MCF7 cells with two ROS compounds, Menadione and TBOOH, and Ethanol vehicle control over a timecourse experiment. This experiment was done in the Slattery Lab by Sarah Lacher. Trimming/adapter removal and QC of single-end 51 bp Illumina HiSeq reads were done using *Trimmomatic* and *FASTQC*. Quantification was done using *Salmon* in selective alignment mode. In this script, I use this data to get differentially expressed genes over the timecourse. I then generate example plots for gene expression profiles of DEGs. This data is 'bundled' at the end for use making a Shiny app.  
+
+## Set up R environment  
+
+```{r import packages, eval=F, message=FALSE}
+library("doParallel")
+library("BiocParallel")
+library("grid")
+library("gridExtra")
+library("labeling")
+library("scales")
+library("ggplot2")
+library("ggrepel")
+library("ggtext")
+library("plotly")
+library("splines")
+library("knitr")
+library("kableExtra")
+library("colorspace")
+library("RColorBrewer")
+library("openxlsx")
+library("dplyr")
+library("tidyr")
+library("magrittr")
+library("tximport")
+library("DESeq2")
+library("biomaRt")
+library("sva")
+library("glue")
+library("extrafont")
+loadfonts(device = 'postscript', quiet=TRUE)
+options(Ncpus=floor(detectCores()*.9))
+register(BPPARAM = MulticoreParam(floor(detectCores()*.9)))
+cores <- detectCores()
+```  
+
+```{r import packages real, eval=T, echo=F, message=F}
+library("doParallel")
+library("BiocParallel")
+library("grid")
+library("gridExtra")
+library("labeling")
+library("scales")
+library("ggplot2")
+library("ggrepel")
+library("ggtext")
+library("plotly")
+library("splines")
+library("knitr")
+library("kableExtra")
+library("colorspace")
+library("RColorBrewer")
+library("openxlsx")
+library("dplyr")
+library("tidyr")
+library("magrittr")
+library("tximport")
+library("DESeq2")
+library("biomaRt")
+library("sva")
+library("glue")
+library("extrafont")
+loadfonts(device = 'postscript', quiet=TRUE)
+options(Ncpus=floor(detectCores()*.9))
+register(BPPARAM = MulticoreParam(floor(detectCores()*.9)))
+cores <- detectCores()
+```  
+
+## Make Gencode v27 (v27 lift 37) EnsemblID to Gene symbol conversion dataframe  
+
+First make a dataframe of all genes included in analysis (and for doing differential expression analysis).  
+
+Also, I compile a full list of gene names, symbols and ID's for searching the 'database' and plotting.  
+
+```{r make gene symbol conversion dataframe}
+# Manually made tx2gene.comprehensive table using the gencode.v27lift37.transcripts.fa file and 
+# the perl script Make-tx2gene-table_Gencode.pl
+tx2gene.table <- read.table(file = gzfile("../ATAC-seq/gencode.v27lift37.transcripts_transcipt-and-gene-list.txt.gz"), 
+    header = FALSE, sep = "\t", quote = '"\'', dec = ".", na.strings = c("NA", "", "NaN"), 
+    stringsAsFactors = FALSE, colClasses = rep("character", 3))
+colnames(tx2gene.table) <- c("TXID", "TXNAME", "GENENAME")
+
+# Make minimal tx2gene dataframe for use with tximport
+tx2Ensemblgene <- subset(tx2gene.table, select=c("TXID", "GENENAME"))
+colnames(tx2Ensemblgene) <- c("TXID", "GENEID")
+length(unique(tx2Ensemblgene$TXID))
+
+# Now make another dataframe for linking the GENENAME back to the actual GENESYMBOL embedded in the GENEID information
+head(tx2Ensemblgene)
+genesymbols <- strsplit(x=as.character(unlist(tx2Ensemblgene)), split = '|', fixed=TRUE)
+genesymbols <- sapply(genesymbols, function(x) x[6])
+genesymbols <- unlist(genesymbols)
+genesymbols <- genesymbols[!is.na(genesymbols)]
+genesymbols <- data.frame(GENEID = tx2Ensemblgene$GENEID, 
+                          SYMBOLS = genesymbols, stringsAsFactors = FALSE)
+head(genesymbols)
+tail(tx2Ensemblgene)
+tail(genesymbols)
+
+# Now shrink this into a dataframe of unique gene names/symbols
+length(unique(genesymbols$GENEID))
+genesymbols <- genesymbols %>% group_by(GENEID) %>% summarize(genesymbols = paste0(unique(SYMBOLS), collapse="|"))
+length(unique(genesymbols$GENEID))
+length(unique(genesymbols$genesymbols))
+
+# Now get ENSG id with no version number
+genesymbols <- genesymbols %>% rowwise %>% mutate(ENSG = trimws(gsub(x = GENEID, pattern = "\\..*$", 
+    replacement = "", perl = T)))
+
+# Get the symbols for all genes from Ensembl
+# httr::set_config(httr::config(ssl_verifypeer = FALSE)) # in case problem with Ensembl
+ens_biomart <- useEnsembl(biomart = "genes", dataset = "hsapiens_gene_ensembl")
+annot <- getBM(attributes = c("ensembl_gene_id", "hgnc_symbol"), 
+               values = genesymbols$ENSG, mart = ens_biomart)
+
+# Combine the updated symbols with the previous dataset
+new_genesymbols <- genesymbols %>% left_join(y=annot, by = c("ENSG" = "ensembl_gene_id")) %>%
+    distinct(.keep_all = T)
+
+# Check if they are the same
+same_gene_idx <- apply(X=new_genesymbols[,c("genesymbols", "hgnc_symbol")], MARGIN = 1,
+    FUN = function(x){identical(unname(x[1]), unname(x[2]))})
+table(same_gene_idx)
+
+# Add gene locations to dataframe
+full_genesymbols <- rbind.data.frame(new_genesymbols[same_gene_idx, c(1,3,2)] %>% 
+    set_colnames(c("gene_id", "ENSG", "symbol")), 
+    new_genesymbols[!same_gene_idx, c(1,3,4)] %>% set_colnames(c("gene_id", "ENSG", "symbol")), 
+    new_genesymbols[!same_gene_idx, c(1,3,2)] %>% set_colnames(c("gene_id", "ENSG", "symbol"))
+) %>% distinct(gene_id, ENSG, symbol, .keep_all = TRUE) %>% arrange("gene_id")
+
+# Check the duplicates
+full_genesymbols[full_genesymbols$ENSG %in% 
+    full_genesymbols$ENSG[duplicated(full_genesymbols$ENSG)],] %>% 
+    arrange(gene_id) %>% head(30)
+
+# Get rid of no longer necessary variables
+rm(new_genesymbols, annot)
+```  
+
+&nbsp;  
+
+Then, get all RefSeq ID's using biomaRt as well.  
+
+```{r get RefSeq genes}
+# Get all RefSeq mRNA and ncRNA transcripts
+all.refseq <- getBM(attributes = c( "refseq_mrna", "refseq_ncrna", "hgnc_symbol", 
+    "ensembl_gene_id"), filters = "ensembl_gene_id", values = genesymbols$ENSG, mart = ens_biomart) %>% 
+    filter((refseq_mrna != "") | (refseq_ncrna != ""))
+dim(all.refseq)
+
+# Now add to the full list of symbols used for 
+gene_to_id_map <- rbind.data.frame(full_genesymbols[,c("gene_id", "symbol")] %>% mutate(type = "symbol"), full_genesymbols[,c("gene_id", "ENSG")] %>%
+    set_colnames(c("gene_id", "symbol")) %>% mutate(type = "ENSG"), left_join(x=full_genesymbols[,c("gene_id", "ENSG")], 
+    y=all.refseq %>% dplyr::select(ensembl_gene_id, refseq_mrna) %>% distinct(.keep_all=T), by = c("ENSG" = "ensembl_gene_id")) %>% 
+    dplyr::select(gene_id, refseq_mrna) %>% set_colnames(c("gene_id", "symbol")) %>% mutate(type = "RefSeq"), left_join(x = 
+    full_genesymbols[,c("gene_id", "ENSG")], y=all.refseq %>% dplyr::select(ensembl_gene_id, refseq_ncrna) %>% 
+    distinct(.keep_all=T), by = c("ENSG" = "ensembl_gene_id")) %>% dplyr::select(gene_id, refseq_ncrna) %>%
+    set_colnames(c("gene_id", "symbol")) %>% mutate(type = "RefSeq")) %>% distinct(.keep_all=T)
+
+# remove NA's
+gene_to_id_map <- gene_to_id_map %>% rowwise %>% mutate(symbol = trimws(symbol)) %>% 
+    mutate(symbol = ifelse(nchar(symbol) > 0, symbol, NA)) %>% filter(!is.na(symbol))
+```  
+
+&nbsp;  
+
+## Load in RNA-seq data  
+
+```{r load in data}
+# Import pseudomapped counts from Salmon for RNA-seq experiment 2
+files <- c(file.path(c(file.path("../ATAC-seq/RNAseq_Slattery_006/salmon_quant_2", c("1B-0hr-0_quant_2", "2B-1hr-E_quant_2", "5B-8hr-E_quant_2", "8B-24hr-E_quant_2", "3B-1hr-M_quant_2", "6B-8hr-M_quant_2", "9B-24hr-M_quant_2", "4B-1hr-T_quant_2", "7B-8hr-T_quant_2", "10B-24hr-T_quant_2")), file.path("../ATAC-seq/RNAseq_Slattery_008/salmon_quant_2", c("1F-0hr-0_quant_2", "2F-1hr-E_quant_2", "5F-8hr-E_quant_2", "8F-24hr-E_quant_2", "3F-1hr-M_quant_2", "6F-8hr-M_quant_2", "9F-24hr-M_quant_2", "4F-1hr-T_quant_2", "7F-8hr-T_quant_2", "10F-24hr-T_quant_2"))), "quant.sf"))
+names(files) <- paste0(rep(c("Ctrl_0-hr_quant_", paste0("EtOH_", c(1,8,24), "-hr_quant_"), 
+    paste0("Men_", c(1,8,24), "-hr_quant_"), paste0("TBOOH_", c(1,8,24), "-hr_quant_")),2), 
+    rep(c("B", "F"), each=10))
+txi.data <- tximport(files, type = "salmon", tx2gene = tx2Ensemblgene, dropInfReps = TRUE)
+```
+
+```{r check data and make sample table}
+names(txi.data)
+str(txi.data)
+
+# Create factors of each of the variables in order to make model matrices with these values for sample design
+# Make these all as separate factors/variables
+treatment <- factor(rep(c("EtOH",rep(c("EtOH", "MEN", "tBOOH"), each=3)), times=2), levels=c("EtOH", "MEN", "tBOOH"))
+time <- factor(rep(c(0,rep(c(1,8,24), times=3)), times=2), levels=c(0,1,8,24))
+rep <- factor(rep(c("B","F"), each=10), levels=c("B","F"))
+grouping <- factor(rep(c("Ctrl_0hr", "EtOH_1hr", "EtOH_8hr", "EtOH_24hr", "MEN_1hr", 
+    "MEN_8hr", "MEN_24hr", "tBOOH_1hr", "tBOOH_8hr", "tBOOH_24hr"), 2), 
+    levels=c("Ctrl_0hr", "EtOH_1hr", "EtOH_8hr", "EtOH_24hr", "MEN_1hr", "MEN_8hr", 
+             "MEN_24hr", "tBOOH_1hr", "tBOOH_8hr", "tBOOH_24hr"))
+
+# Create sample table to assign treatments & time to RNA-seq data
+sampleTable <- data.frame(sample = gsub(x = colnames(txi.data$counts), pattern = "-hr_quant", replacement = "hr"),
+                          treatment = treatment,
+                          time = time,
+                          rep = rep,
+                          grouping = grouping
+)
+rownames(sampleTable) <- colnames(txi.data$counts)
+```
+
+&nbsp;  
+
+## Run in DESeq2  
+
+Specifically, I use two methods to get differentially expressed genes- DESeq's LRT method, as well as one-by-one comparisons between the 0 hr control and each EtOH/MEN/tBOOH timepoint sample.  
+
+```{r DESeq2 RNAseq}
+# Build model matrix for LRT method when only having single time 0 timepoint
+mm <- model.matrix(~rep + time + treatment + time:treatment)
+mm.full <- subset(mm, select=c(-6,-7))
+mm.reduced <- subset(mm.full, select=c(1:5))
+
+# Now do DGE to get only genes with significant changes in expression
+countdata.DGE <- DESeqDataSetFromTximport(txi=txi.data, colData = sampleTable, design = ~1)
+
+# Remove no count genes
+countdata.DGE <- countdata.DGE[rowSums(counts(countdata.DGE)) > 0, ]
+
+# Now run DESeq with whichever one had the lowest median absolute residual
+countdata.TC <- DESeq(countdata.DGE, test = "LRT", full = mm.full, reduced = mm.reduced, 
+                      fitType = "local", parallel = TRUE)
+
+# Still a few bad rows- filter these out (and keep in 'bad.data')
+bad.data <- countdata.TC[which(!mcols(countdata.TC)$fullBetaConv),]
+bad.counts <- counts(bad.data, normalized=TRUE)
+
+# filtered count data
+countdata.TC <- countdata.TC[which(mcols(countdata.TC)$fullBetaConv),]
+
+# Get all significantly differentially expressed genes by LRT method
+results.LRT <- results(countdata.TC, alpha = 0.05, test = "LRT", 
+                       pAdjustMethod = "fdr", parallel = TRUE)
+summary(results.LRT)
+results.LRT$GENEID <- rownames(results.LRT)
+results.LRT %<>% as.data.frame(stringsAsFactors = FALSE)
+results.LRT %<>% left_join(genesymbols)
+colnames(results.LRT)[7:8] <- c("ensembl_gene_specific", "Symbol")
+head(results.LRT)
+LRT.signif.stringent <- subset(x = results.LRT, subset = ((padj < 0.05) & !is.na(padj))) %>% 
+    dplyr::select(ensembl_gene_specific) %>% unlist %>% unique()
+
+# Cleanup and redo in one-by-one comparisons
+rm(countdata.DGE, countdata.TC)
+
+# Do differental gene expression analysis again, but on a one-by-one basis
+countdata.DGE <- DESeqDataSetFromTximport(txi=txi.data, colData = sampleTable, 
+    design = ~rep + grouping)
+
+# Remove no count genes
+countdata.DGE <- countdata.DGE[rowSums(counts(countdata.DGE)) > 0, ]
+
+# Now run DESeq with whichever one had the lowest median absolute residual
+countdata.TC <- DESeq(countdata.DGE, test = "LRT", reduced = ~rep, 
+                      fitType = "local", parallel = TRUE)
+
+# Still a few bad rows- filter these out (and keep in 'bad.data')
+bad.data <- countdata.TC[which(!mcols(countdata.TC)$fullBetaConv),]
+
+# filtered count data
+countdata.TC <- countdata.TC[which(mcols(countdata.TC)$fullBetaConv),]
+
+# Identify genes with significantly different expression between Menadione treatment and 0 hr
+results.MEN.1hr <- results(countdata.TC, name = "grouping_MEN_1hr_vs_Ctrl_0hr", 
+    alpha = 0.05, test = "Wald", pAdjustMethod = "fdr", parallel = TRUE)
+summary(results.MEN.1hr)
+results.MEN.1hr$GENEID <- rownames(results.MEN.1hr)
+results.MEN.1hr %<>% as.data.frame(stringsAsFactors = FALSE)
+results.MEN.1hr %<>% left_join(genesymbols)
+colnames(results.MEN.1hr)[7:8] <- c("ensembl_gene_specific", "Symbol")
+
+results.MEN.8hr <- results(countdata.TC, name = "grouping_MEN_8hr_vs_Ctrl_0hr", 
+    alpha = 0.05, test = "Wald", pAdjustMethod = "fdr", parallel = TRUE)
+summary(results.MEN.8hr)
+results.MEN.8hr$GENEID <- rownames(results.MEN.8hr)
+results.MEN.8hr %<>% as.data.frame(stringsAsFactors = FALSE)
+results.MEN.8hr %<>% left_join(genesymbols)
+colnames(results.MEN.8hr)[7:8] <- c("ensembl_gene_specific", "Symbol")
+
+results.MEN.24hr <- results(countdata.TC, name = "grouping_MEN_24hr_vs_Ctrl_0hr", 
+    alpha = 0.05, test = "Wald", pAdjustMethod = "fdr", parallel = TRUE)
+summary(results.MEN.24hr)
+results.MEN.24hr$GENEID <- rownames(results.MEN.24hr)
+results.MEN.24hr %<>% as.data.frame(stringsAsFactors = FALSE)
+results.MEN.24hr %<>% left_join(genesymbols)
+colnames(results.MEN.24hr)[7:8] <- c("ensembl_gene_specific", "Symbol")
+
+# Same for tBOOH
+results.tBOOH.1hr <- results(countdata.TC, name = "grouping_tBOOH_1hr_vs_Ctrl_0hr", 
+    alpha = 0.05, test = "Wald", pAdjustMethod = "fdr", parallel = TRUE)
+summary(results.tBOOH.1hr)
+results.tBOOH.1hr$GENEID <- rownames(results.tBOOH.1hr)
+results.tBOOH.1hr %<>% as.data.frame(stringsAsFactors = FALSE)
+results.tBOOH.1hr %<>% left_join(genesymbols)
+colnames(results.tBOOH.1hr)[7:8] <- c("ensembl_gene_specific", "Symbol")
+
+results.tBOOH.8hr <- results(countdata.TC, name = "grouping_tBOOH_8hr_vs_Ctrl_0hr", 
+    alpha = 0.05, test = "Wald", pAdjustMethod = "fdr", parallel = TRUE)
+summary(results.tBOOH.8hr)
+results.tBOOH.8hr$GENEID <- rownames(results.tBOOH.8hr)
+results.tBOOH.8hr %<>% as.data.frame(stringsAsFactors = FALSE)
+results.tBOOH.8hr %<>% left_join(genesymbols)
+colnames(results.tBOOH.8hr)[7:8] <- c("ensembl_gene_specific", "Symbol")
+
+results.tBOOH.24hr <- results(countdata.TC, name = "grouping_tBOOH_24hr_vs_Ctrl_0hr", 
+    alpha = 0.05, test = "Wald", pAdjustMethod = "fdr", parallel = TRUE)
+summary(results.tBOOH.24hr)
+results.tBOOH.24hr$GENEID <- rownames(results.tBOOH.24hr)
+results.tBOOH.24hr %<>% as.data.frame(stringsAsFactors = FALSE)
+results.tBOOH.24hr %<>% left_join(genesymbols)
+colnames(results.tBOOH.24hr)[7:8] <- c("ensembl_gene_specific", "Symbol")
+
+# Do the same for Ethanol
+results.EtOH.1hr <- results(countdata.TC, name = "grouping_EtOH_1hr_vs_Ctrl_0hr", 
+    alpha = 0.05, test = "Wald", pAdjustMethod = "fdr", parallel = TRUE)
+summary(results.EtOH.1hr)
+results.EtOH.1hr$GENEID <- rownames(results.EtOH.1hr)
+results.EtOH.1hr %<>% as.data.frame(stringsAsFactors = FALSE)
+results.EtOH.1hr %<>% left_join(genesymbols)
+colnames(results.EtOH.1hr)[7:8] <- c("ensembl_gene_specific", "Symbol")
+
+results.EtOH.8hr <- results(countdata.TC, name = "grouping_EtOH_8hr_vs_Ctrl_0hr", 
+    alpha = 0.05, test = "Wald", pAdjustMethod = "fdr", parallel = TRUE)
+summary(results.EtOH.8hr)
+results.EtOH.8hr$GENEID <- rownames(results.EtOH.8hr)
+results.EtOH.8hr %<>% as.data.frame(stringsAsFactors = FALSE)
+results.EtOH.8hr %<>% left_join(genesymbols)
+colnames(results.EtOH.8hr)[7:8] <- c("ensembl_gene_specific", "Symbol")
+
+results.EtOH.24hr <- results(countdata.TC, name = "grouping_EtOH_24hr_vs_Ctrl_0hr", 
+    alpha = 0.05, test = "Wald", pAdjustMethod = "fdr", parallel = TRUE)
+summary(results.EtOH.24hr)
+results.EtOH.24hr$GENEID <- rownames(results.EtOH.24hr)
+results.EtOH.24hr %<>% as.data.frame(stringsAsFactors = FALSE)
+results.EtOH.24hr %<>% left_join(genesymbols)
+colnames(results.EtOH.24hr)[7:8] <- c("ensembl_gene_specific", "Symbol")
+```  
+
+```{r combine to find all permissive and stringent differential genes}
+# Now put all the genes that are differentially expressed 
+# (padj < 0.05 between 0 and their respective MEN/tBOOH timepoints)
+# into a single vector
+c(results.MEN.1hr$ensembl_gene_specific[(results.MEN.1hr$padj < 0.05) & !is.na(results.MEN.1hr$padj)],
+  results.MEN.8hr$ensembl_gene_specific[(results.MEN.8hr$padj < 0.05) & !is.na(results.MEN.8hr$padj)],
+  results.MEN.24hr$ensembl_gene_specific[(results.MEN.24hr$padj < 0.05) & !is.na(results.MEN.24hr$padj)],
+  results.tBOOH.1hr$ensembl_gene_specific[(results.tBOOH.1hr$padj < 0.05) & !is.na(results.tBOOH.1hr$padj)],
+  results.tBOOH.8hr$ensembl_gene_specific[(results.tBOOH.8hr$padj < 0.05) & !is.na(results.tBOOH.8hr$padj)],
+  results.tBOOH.24hr$ensembl_gene_specific[(results.tBOOH.24hr$padj < 0.05) & !is.na(results.tBOOH.24hr$padj)]
+) -> stringent.DEGs.vs.0hr
+stringent.DEGs.vs.0hr %<>% unique() %<>% as.character()
+
+# Now combine the LRT based approach and the vs 0 one-by-one vectors and get any gene with significant
+# difference in EITHER methods
+all.DEGs.final.stringent <- as.character(c(LRT.signif.stringent, stringent.DEGs.vs.0hr)) %>% unique()
+
+# How many genes?
+all.DEGs.final.stringent %>% length()
+```  
+
+&nbsp;  
+
+## Get expression data  
+
+```{r get abundance data for plotting}
+# Get all non-zero expression data
+TPM_df <- txi.data$abundance %>% as.data.frame()
+colnames(TPM_df) <- gsub(x = colnames(TPM_df), pattern = "-hr_quant",  replacement = "hr")
+TPM_df$tpm_sum <- rowSums(TPM_df)
+TPM_df$gene_id <- rownames(txi.data$abundance)
+TPM_df <- TPM_df %>% filter(tpm_sum > 0) %>% dplyr::select(22, 1:20)
+```  
+
+```{r also get batch corrected expression values}
+# Now deal with batch effects in the data for plotting
+# setup batch effect comparison
+mod_TPM <- mm.full[,-2]
+mod0_TPM <- model.matrix(~ 1, sampleTable)
+svseq_TPM <- svaseq(as.matrix(TPM_df[,-1]), mod_TPM, mod0_TPM, n.sv = 1, B = 20)
+modSv_TPM <- cbind(mod_TPM, svseq_TPM$sv)
+
+# SV1 showed a strong signal associated with replicate, so this is likely the batch effect from replicates
+# Now we will attempt to correct for this using the ComBat function
+repbatch_TPM <- sampleTable$rep
+batch_corrected_TPM <- ComBat(dat=as.matrix(TPM_df[,-1]), batch=repbatch_TPM, mod=mod0_TPM, 
+                              par.prior = TRUE, prior.plots=FALSE)
+
+# Assign negative values as 0's
+batch_corrected_TPM[batch_corrected_TPM < 0] <- 0
+batch_corrected_TPM <- as.data.frame(batch_corrected_TPM, stringsAsFactors=FALSE)
+
+# Make the format match the TPM_df
+batch_corrected_TPM <- cbind.data.frame(data.frame(gene_id = rownames(batch_corrected_TPM), 
+    batch_corrected_TPM))
+```  
+
+&nbsp;  
+
+## Clean up and save  
+
+Now remove all non-essential data and save all data as an R data object for Shiny app  
+
+```{r clean and save, eval = T}
+# only retain: log2FC, lfcSE, pvalue, padj, ensembl_gene_specific
+results.EtOH.1hr %<>% dplyr::select(ensembl_gene_specific, log2FoldChange, lfcSE, pvalue, padj) %>% 
+    set_colnames(c("gene_id", "log2FC_vs_0", "lfcSE", "pval", "FDR_p"))
+results.EtOH.8hr %<>% dplyr::select(ensembl_gene_specific, log2FoldChange, lfcSE, pvalue, padj) %>% set_colnames(c("gene_id", "log2FC_vs_0", "lfcSE", "pval", "FDR_p"))
+results.EtOH.24hr %<>% dplyr::select(ensembl_gene_specific, log2FoldChange, lfcSE, pvalue, padj) %>% set_colnames(c("gene_id", "log2FC_vs_0", "lfcSE", "pval", "FDR_p"))
+results.MEN.1hr %<>% dplyr::select(ensembl_gene_specific, log2FoldChange, lfcSE, pvalue, padj) %>% set_colnames(c("gene_id", "log2FC_vs_0", "lfcSE", "pval", "FDR_p"))
+results.MEN.8hr %<>% dplyr::select(ensembl_gene_specific, log2FoldChange, lfcSE, pvalue, padj) %>% set_colnames(c("gene_id", "log2FC_vs_0", "lfcSE", "pval", "FDR_p"))
+results.MEN.24hr %<>% dplyr::select(ensembl_gene_specific, log2FoldChange, lfcSE, pvalue, padj) %>% set_colnames(c("gene_id", "log2FC_vs_0", "lfcSE", "pval", "FDR_p"))
+results.tBOOH.1hr %<>% dplyr::select(ensembl_gene_specific, log2FoldChange, lfcSE, pvalue, padj) %>% set_colnames(c("gene_id", "log2FC_vs_0", "lfcSE", "pval", "FDR_p"))
+results.tBOOH.8hr %<>% dplyr::select(ensembl_gene_specific, log2FoldChange, lfcSE, pvalue, padj) %>% set_colnames(c("gene_id", "log2FC_vs_0", "lfcSE", "pval", "FDR_p"))
+results.tBOOH.24hr %<>% dplyr::select(ensembl_gene_specific, log2FoldChange, lfcSE, pvalue, padj) %>% set_colnames(c("gene_id", "log2FC_vs_0", "lfcSE", "pval", "FDR_p"))
+results.LRT %<>% dplyr::select(ensembl_gene_specific,  pvalue, padj) %>% set_colnames(c("gene_id", "pval", "FDR_p"))
+
+# remove variables that are no longer needed for plotting data
+rm(txi.data, tx2gene.table, tx2Ensemblgene, mm, mm.full, mm.reduced, all.refseq, bad.counts, bad.data, 
+   countdata.DGE, countdata.TC, ens_biomart, full_genesymbols, genesymbols, files, grouping, rep, 
+   same_gene_idx, time, treatment, LRT.signif.stringent, stringent.DEGs.vs.0hr, cores, mod_TPM,
+   mod0_TPM, svseq_TPM, modSv_TPM, repbatch_TPM)
+
+save(list = ls(all=TRUE), file = "MCF7-ROS-RNAseq.RData")
+```  
