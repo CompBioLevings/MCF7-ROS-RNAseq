@@ -7,7 +7,6 @@
 library("shiny", quietly = TRUE)
 
 # Load in the data for the app
-# setwd(dir = "/mnt/Storage_Disk/Work/Slattery Lab/Data/Genomics/Shiny-app-2-RNA-seq-exp/MCF7-RNA-seq-reanalysis-Shiny-app/")
 load(file="MCF7-ROS-RNAseq.RData")
 
 # Define UI for application that draws a histogram
@@ -76,7 +75,7 @@ ui <- fluidPage(
         )
 ))
 
-# Define server logic required to draw a histogram
+# Define server logic required to draw time course plot and statistics table
 server <- function(input, output) {
     
     # Load necessary packages and data
@@ -90,11 +89,9 @@ server <- function(input, output) {
     library("tidyverse", quietly = TRUE, warn.conflicts = FALSE)
     library("shiny", quietly = TRUE)
     
+    # Function for drawing the plot of gene expression
     gene_expr_plot <- function(genename = NA, treat=1, break.num=10, 
                                batchcorrect = TRUE, includerep = FALSE, timepoints = NA, limits = "") {
-      
-      # genename <- "G6PD"
-      # treat <- 2
       
       if (batchcorrect) {
         expression_df <- batch_corrected_TPM
@@ -186,7 +183,7 @@ server <- function(input, output) {
         stop("Invalid y limits specified.  Please type in only two comma-delimited numbers: eg- 1, 100")
       }
       
-      # Now Y axis (gene abundance/TPM)
+      # Now Y axis (gene abundance/TPM) limits
       if (nchar(as.character(limits)) == 0) {
         q <- q + scale_color_manual(values=genecolors) + coord_cartesian(xlim=timepoints, 
              ylim=c(0+(max(genedata$TPM,na.rm=TRUE)+max(genedata$TPM,na.rm=TRUE)*0.25)*0.1, 
@@ -233,6 +230,7 @@ server <- function(input, output) {
       options(warn = oldw)
     }
     
+    # Function for getting and plotting table of statistical values
     get_stats <- function(genename = NULL, treat = 1) {
       
         # Convert gene name/symbol to Ensembl ID to pass to RNA seq data, then import that data
@@ -274,7 +272,7 @@ server <- function(input, output) {
             limits=input$ylimits))
     })
     
-    # Plot the plot
+    # Output the plot
     output$plotgraphs <- renderPlot(res = 100, {
         ptlist <- list(pt1())
         wtlist <- c(6)
