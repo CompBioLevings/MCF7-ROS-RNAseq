@@ -1,6 +1,7 @@
 # MCF7-ROS-RNAseq
 This is a script I used to make an R Shiny application that allows for browsing the time-course gene expression signal, and associated statistics, for an experiment where MCF-7 cells were exposed to oxidative stress-inducing compounds.  This dataset was published in *Free Radical Biology and Medicine*, article found here: [Levings et al. *FRBM*. 2021](https://doi.org/10.1016/j.freeradbiomed.2021.05.016). 
 
+I also include the R code (in R Markdown format) used to generate the R data for the app, which is stored in this repository (*MCF7-ROS-RNAseq.RData*).
 
 To use this app:
 
