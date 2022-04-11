@@ -3,7 +3,7 @@ This is a script I used to make an R Shiny application that allows for browsing 
 
 ---------------------------------------------------------------------------------------------------
 
-**Raw source:**
+**Raw data sources:**
 
 Gene Expression Omnibus ([GEO]( http://www.ncbi.nlm.nih.gov/geo/))
 [GSE173664](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE173664)
