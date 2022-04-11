@@ -11,7 +11,7 @@ To use this app:
    
    ```R -e "shiny::runApp('[desired location]/MCF7-ROS-RNAseq/app.R')"```
 5) R will run the app, and show what address the plot will be output at.  It should look something like: ```Listening on http://127.0.0.1:6880``` 
-6) Copy the address and paste it into your web browser to use the app.
+6) Copy the address (eg - ```127.0.0.1:6880```) and paste it into your web browser to use the app.
 
 ---------------------------------------------------------------------------------------------------
 
