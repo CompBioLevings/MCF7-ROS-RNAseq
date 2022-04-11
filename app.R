@@ -85,8 +85,6 @@ server <- function(input, output) {
     library("ggtext", quietly = TRUE)
     library("scales", quietly = TRUE)
     library("gridExtra", quietly = TRUE)
-    library("colorspace", quietly = TRUE)
-    library("RColorBrewer", quietly = TRUE)
     library("xtable", quietly = TRUE)
     library("magrittr", quietly = TRUE, warn.conflicts = FALSE)
     library("tidyverse", quietly = TRUE, warn.conflicts = FALSE)
