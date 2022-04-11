@@ -2,7 +2,7 @@
 This is a script I used to make an R Shiny application that allows for browsing the time-course gene expression signal, and associated statistics, for an experiment where MCF-7 cells were exposed to oxidative stress-inducing compounds.  This dataset was published in *Free Radical Biology and Medicine*, article found here: [Levings et al. *FRBM*. 2021](https://doi.org/10.1016/j.freeradbiomed.2021.05.016). 
 
 
-To use this app-
+To use this app:
 
 1) Clone this GitHub repository to [desired location].
 2) Make sure you have the R programming language and the following packages installed: *magrittr*, *ggplot2*, *ggrepel*, *ggtext*, *gridExtra*, *scales*, *shiny*, *tidyverse*, *xtable*
