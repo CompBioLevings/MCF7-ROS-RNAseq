@@ -1,11 +1,12 @@
 # MCF7-ROS-RNAseq
-This is a script I used to make an R Shiny application that allows for browsing the time-course gene expression signal, and associated statistics, for an experiment where MCF-7 cells were exposed to oxidative stress-inducing compounds.  This dataset was published in *Free Radical Biology and Medicine*, article found here: [Levings et al. *FRBM*. 2021.](https://doi.org/10.1016/j.freeradbiomed.2021.05.016). 
+This is a script I used to make an R Shiny application that allows for browsing the time-course gene expression signal, and associated statistics, for an experiment where MCF-7 cells were exposed to oxidative stress-inducing compounds.  This dataset was published in *Free Radical Biology and Medicine*, article found here: [Levings et al. *FRBM*. 2021](https://doi.org/10.1016/j.freeradbiomed.2021.05.016). 
 
 ---------------------------------------------------------------------------------------------------
 
 **Raw data sources:**
 
-Gene Expression Omnibus ([GEO]( http://www.ncbi.nlm.nih.gov/geo/))
+Gene Expression Omnibus ([GEO]( http://www.ncbi.nlm.nih.gov/geo/))  
+
 [GSE173664](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE173664)
 
 ---------------------------------------------------------------------------------------------------
