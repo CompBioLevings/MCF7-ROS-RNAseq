@@ -28,39 +28,7 @@ This is an **R Markdown** script created to document my analysis of ROS exposure
 
 ## Set up R environment  
 
-```{r import packages, eval=F, message=FALSE}
-library("doParallel")
-library("BiocParallel")
-library("grid")
-library("gridExtra")
-library("labeling")
-library("scales")
-library("ggplot2")
-library("ggrepel")
-library("ggtext")
-library("plotly")
-library("splines")
-library("knitr")
-library("kableExtra")
-library("colorspace")
-library("RColorBrewer")
-library("openxlsx")
-library("dplyr")
-library("tidyr")
-library("magrittr")
-library("tximport")
-library("DESeq2")
-library("biomaRt")
-library("sva")
-library("glue")
-library("extrafont")
-loadfonts(device = 'postscript', quiet=TRUE)
-options(Ncpus=floor(detectCores()*.9))
-register(BPPARAM = MulticoreParam(floor(detectCores()*.9)))
-cores <- detectCores()
-```  
-
-```{r import packages real, eval=T, echo=F, message=F}
+```{r import packages real, eval=T, echo=T, message=F}
 library("doParallel")
 library("BiocParallel")
 library("grid")
